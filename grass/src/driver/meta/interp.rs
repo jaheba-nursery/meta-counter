@@ -74,6 +74,14 @@ impl StackVal {
 type Program = Vec<(usize, usize, Vec<OpCode>)>;
 
 
+
+enum DispatchResult {
+    Next,
+    Jump(usize),
+    Call(usize, usize),
+    Stop,
+}
+
 pub struct Interpreter<'a> {
     pub program: &'a Program,
 
@@ -93,139 +101,181 @@ impl<'a> Interpreter<'a> {
         }
     }
 
-    pub fn run(&mut self, mut tracer: Option<&mut Tracer>, func_idx: usize, idx: usize) {
-        let mut pc: usize = idx;
-        let mut func_pointer = func_idx;
+    fn dispatch(&mut self, opcode: OpCode, pos: InstructionPointer) -> DispatchResult {
+
+        match opcode {
+            OpCode::Panic => panic!("assertion failed"),
+
+            OpCode::ConstValue(val) => {
+                self.stack.push(StackVal::Owned(val));
+            }
+
+            OpCode::Tuple(size) => self.o_tuple(size),
+            OpCode::TupleInit(size) => self.o_tuple_init(size),
+            OpCode::TupleGet(idx) => self.o_tuple_get(idx),
+            OpCode::TupleSet(idx) => self.o_tuple_set(idx),
+
+            // XXX: proper implementation of unsize
+            OpCode::Unsize | OpCode::Use => {
+                let val = self.stack.pop().unwrap().into_owned();
+                self.stack.push(val);
+            }
+
+            OpCode::Ref => self.o_ref(),
+
+            OpCode::Deref => self.o_deref(),
+
+            OpCode::Load(local_index) => self.o_load(local_index),
+
+            OpCode::Store(local_index) => self.o_store(local_index),
+
+            OpCode::Call => {
+                // load and activate func
+                let func_pointer = self.o_call(pos.func, pos.pc);
+                // jump to first instruction of function
+                // continue is necessary because else pc += 1 would be executed
+                return DispatchResult::Call(func_pointer, 0);
+            }
+
+            OpCode::Static(static_idx) => {
+                let func_pointer = self.o_load_static(static_idx, pos.func, pos.pc);
+                return DispatchResult::Call(func_pointer, 0);
+            }
+
+            OpCode::Return => {
+                if let Some(ret) = self.o_return() {
+                    return DispatchResult::Call(ret.func, ret.pc);
+                } else {
+                    return DispatchResult::Stop;
+                }
+            }
+
+            OpCode::Skip(n) => {
+                // tracer.as_mut().map(|tracer| tracer.jump_target(target));
+                return DispatchResult::Jump(pos.pc + n);
+            }
+            OpCode::JumpBack(n) => {
+                // tracer.as_mut().map(|tracer| tracer.jump_target(target));
+                return DispatchResult::Jump(pos.pc - n);
+            }
+
+            OpCode::SkipIf(n) => {
+                let val = self.pop_value();
+                if let R_BoxedValue::Bool(b) = val {
+                    if b {
+                        // tracer.as_mut().map(|tracer| tracer.jump_target(pc));
+                        return DispatchResult::Jump(pos.pc + n);
+                    }
+                } else {
+                    panic!("expected bool, git {:?}", val);
+                }
+            }
+            OpCode::JumpBackIf(n) => {
+                let val = self.pop_value();
+                if let R_BoxedValue::Bool(b) = val {
+                    // XXX: Jumped Back
+                    if b {
+                        // tracer.as_mut().map(|tracer| tracer.jump_target(pc));
+                        return DispatchResult::Jump(pos.pc - n);
+                    }
+                } else {
+                    panic!("expected bool, got {:?}", val);
+                }
+            }
+
+            OpCode::GetIndex => self.o_get_index(),
+            OpCode::AssignIndex => self.o_assign_index(),
+
+            OpCode::Array(size) => self.o_array(size),
+
+            OpCode::Repeat(size) => self.o_repeat(size),
+
+            OpCode::Len => self.o_len(),
+
+            OpCode::BinOp(kind) => self.o_binop(kind),
+            OpCode::CheckedBinOp(kind) => self.o_checked_binop(kind),
+
+            OpCode::Not => self.o_not(),
+            OpCode::Neg => unimplemented!(),
+            OpCode::Noop => (),
+
+            _ => {
+                println!("XXX: {:?}", opcode);
+                unimplemented!()
+            }
+        }
+
+        return DispatchResult::Next;
+    }
+
+    pub fn trace(&mut self, tracer: &mut Tracer, start: InstructionPointer) {
+        let mut pc: usize = start.pc;
+        let mut func_pointer: usize = start.func;
 
         loop {
-            if func_pointer == func_idx && pc < idx {
-                // exit trace after jumping back
-                return;
+            let opcode = self.program[func_pointer].2[pc].clone();
+            tracer.trace_opcode(&self, &opcode, InstructionPointer {
+                func: func_pointer,
+                pc: pc,
+            });
+
+            match self.dispatch(opcode, InstructionPointer{func: func_pointer, pc: pc }) {
+                DispatchResult::Next => {
+                    pc += 1;
+                }
+                DispatchResult::Jump(new_pc) => {
+                    if new_pc < start.pc {
+                        return;
+                    }
+                    pc = new_pc;
+                }
+                DispatchResult::Call(func, new_pc) => {
+                    func_pointer = func;
+                    pc = new_pc;
+                }
+                DispatchResult::Stop => {
+                    panic!("STOPPED");
+                }
             }
+        }
+    }
 
 
+    pub fn blackhole(&mut self, start: InstructionPointer, stop: InstructionPointer) {
+        let mut pc: usize = start.pc;
+        let mut func_pointer = stop.func;
+
+        loop {
             let opcode = self.program[func_pointer].2[pc].clone();
 
-            {
-                tracer.as_mut().map(|mut t| t.trace_opcode(&opcode,
-                    InstructionPointer {
-                        func: func_pointer,
-                        pc: pc,
-                    }
-                ));
+            if start.func == stop.func && pc < stop.pc {
+                break;
             }
 
-            match opcode {
-                OpCode::Panic => panic!("assertion failed"),
-
-                OpCode::ConstValue(val) => {
-                    self.stack.push(StackVal::Owned(val));
+            match self.dispatch(opcode, InstructionPointer{func: func_pointer, pc: pc }) {
+                DispatchResult::Next => {
+                    pc += 1;
                 }
-
-                OpCode::Tuple(size) => self.o_tuple(size),
-                OpCode::TupleInit(size) => self.o_tuple_init(size),
-                OpCode::TupleGet(idx) => self.o_tuple_get(idx),
-                OpCode::TupleSet(idx) => self.o_tuple_set(idx),
-
-                // XXX: proper implementation of unsize
-                OpCode::Unsize | OpCode::Use => {
-                    let val = self.stack.pop().unwrap().into_owned();
-                    self.stack.push(val);
-                }
-
-                OpCode::Ref => self.o_ref(),
-
-                OpCode::Deref => self.o_deref(),
-
-                OpCode::Load(local_index) => self.o_load(local_index),
-
-                OpCode::Store(local_index) => self.o_store(local_index),
-
-                OpCode::Call => {
-                    // load and activate func
-                    func_pointer = self.o_call(func_pointer, pc);
-                    // jump to first instruction of function
-                    // continue is necessary because else pc += 1 would be executed
-                    pc = 0;
-                    continue;
-                }
-
-                OpCode::Static(static_idx) => {
-                    func_pointer = self.o_load_static(static_idx, func_pointer, pc);
-                    pc = 0;
-                    continue;
-                }
-
-                OpCode::Return => {
-                    if let Some(ret) = self.o_return() {
-                        func_pointer = ret.func;
-                        pc = ret.pc;
-                    } else {
-                        break;
+                DispatchResult::Jump(new_pc) => {
+                    if new_pc < start.pc {
+                        return;
                     }
+                    pc = new_pc;
                 }
-
-                OpCode::Skip(n) => {
-                    pc += n;
-                    continue;
+                DispatchResult::Call(func, new_pc) => {
+                    func_pointer = func;
+                    pc = new_pc;
                 }
-                OpCode::JumpBack(n) => {
-                    pc -= n;
-                    continue;
-                }
-
-                OpCode::SkipIf(n) => {
-                    let val = self.pop_value();
-                    if let R_BoxedValue::Bool(b) = val {
-                        if b {
-                            pc += n;
-                            continue;
-                        }
-                    } else {
-                        panic!("expected bool, git {:?}", val);
-                    }
-                }
-                OpCode::JumpBackIf(n) => {
-                    let val = self.pop_value();
-                    if let R_BoxedValue::Bool(b) = val {
-                        // XXX: Jumped Back
-                        if b {
-                            pc -= n;
-                            continue;
-                        }
-                    } else {
-                        panic!("expected bool, got {:?}", val);
-                    }
-                }
-
-                OpCode::GetIndex => self.o_get_index(),
-                OpCode::AssignIndex => self.o_assign_index(),
-
-                OpCode::Array(size) => self.o_array(size),
-
-                OpCode::Repeat(size) => self.o_repeat(size),
-
-                OpCode::Len => self.o_len(),
-
-                OpCode::BinOp(kind) => self.o_binop(kind),
-                OpCode::CheckedBinOp(kind) => self.o_checked_binop(kind),
-
-                OpCode::Not => self.o_not(),
-                OpCode::Neg => unimplemented!(),
-                OpCode::Noop => (),
-
-                _ => {
-                    println!("XXX: {:?}", opcode);
-                    unimplemented!()
+                DispatchResult::Stop => {
+                    panic!("STOPPED");
                 }
             }
 
-            pc += 1;
         }
     }
 
     /// execute a linear trace - returns on guard failure
-    pub fn run_trace(&mut self, trace: &[OpCode]) -> InstructionPointer {
+    pub fn run_trace(&mut self, trace: &[OpCode]) -> Guard {
         let mut pc: usize = 0;
 
         loop {
@@ -234,12 +284,28 @@ impl<'a> Interpreter<'a> {
             }
 
             let opcode = trace[pc].clone();
-
             match opcode {
                 OpCode::Panic => panic!("assertion failed"),
 
-                OpCode::Guard(Guard { recovery: ip, expected: _ })=> {
-                    return ip;
+                OpCode::Guard(guard)=> {
+                    // we have to leave the boolean value on the stack
+                    // so the blackhole interpreter can branch correctly
+                    match self.peek_value() {
+                        // guard success
+                        R_BoxedValue::Bool(value) if value == guard.expected => {
+                            // pop peeked value
+
+                            self.stack.pop();
+                        },
+
+                        // guard failure
+                        R_BoxedValue::Bool(_) => {
+                            return guard;
+                        }
+
+                        // something completely wrong
+                        val => panic!("expected bool, got {:?}", val),
+                    }
                 }
 
                 OpCode::ConstValue(val) => {
@@ -459,6 +525,16 @@ impl<'a> Interpreter<'a> {
             panic!("expected const");
         }
     }
+
+    pub fn peek_value(&mut self) -> R_BoxedValue {
+        let val = self.stack.last().unwrap().clone().into_owned().unwrap_value();
+        if let R_BoxedValue::Static(def_id) = val {
+            self.load_const(def_id)
+        } else {
+            val
+        }
+    }
+
 
     pub fn pop_value(&mut self) -> R_BoxedValue {
         let val = self.stack.pop().unwrap().into_owned().unwrap_value();

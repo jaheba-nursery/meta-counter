@@ -3,7 +3,7 @@
 mod meta;
 
 use std::rc::Rc;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 
 use bc::bytecode::{OpCode, Guard};
@@ -46,7 +46,7 @@ impl Driver {
 
                 let mut interp = meta::interp::Interpreter::new(&prog);
                 interp.stack_frames.push(frame);
-                interp.run(Some(&mut self.tracer), fn_idx, oc_idx);
+                interp.trace(&mut self.tracer, InstructionPointer{func: fn_idx, pc: oc_idx});
                 self.tracer.finish_trace(pc as u64);
 
                 let frame = &interp.stack_frames[0];
@@ -84,14 +84,22 @@ impl Driver {
                 let mut interp = meta::interp::Interpreter::new(&prog);
                 interp.stack_frames.push(frame);
 
-                let inst = interp.run_trace(&*trace);
+                let guard = interp.run_trace(&*trace);
+                // side trace
+                // {
+                //     println!("SIDE #########");
+                //     self.tracer.side_trace();
+                //     interp.run(Some(&mut self.tracer), fn_idx, guard.recovery.pc, oc_idx);
+                //     println!("{:?}", self.tracer.active);
+                //     panic!("STOP");
+                // }
+
                 // some guard failed
                 // should we side trace?
-                println!("inst: {:?}, pc: {}", inst.pc, pc);
 
 
                 // blackhole?
-                interp.run(None, fn_idx, inst.pc);
+                interp.blackhole(InstructionPointer{func: fn_idx, pc: guard.recovery.pc}, InstructionPointer{func: fn_idx, pc: oc_idx});
 
                 let frame = &interp.stack_frames[0];
 
@@ -138,6 +146,8 @@ pub struct Tracer {
     traces: BTreeMap<HashValue, Rc<Vec<OpCode>>>,
     loop_start: HashValue,
 
+    seen_jump_targets: BTreeSet<HashValue>,
+
     active: Option<Vec<OpCode>>,
 }
 
@@ -164,20 +174,26 @@ impl Tracer {
         }
         // close the loop
         else if key == self.loop_start {
-            self.finish_trace(key);
+            // self.finish_trace(key);
+            panic!("doesn't get called anymore");
         }
 
         MergePointResult::None
     }
 
+    pub fn side_trace(&mut self) {
+        self.active = Some(Vec::new());
+    }
+
     pub fn finish_trace(&mut self, key: HashValue) {
         let active = self.active.take().unwrap();
+        self.seen_jump_targets.clear();
         self.traces.insert(key, Rc::new(active));
     }
 
-    pub fn trace_opcode(&mut self, opcode: &OpCode, pos: InstructionPointer) {
+    pub fn trace_opcode(&mut self, interp: &meta::interp::Interpreter, opcode: &OpCode, pos: InstructionPointer) {
         let oc = match *opcode {
-            OpCode::Skip(_) { return; },
+            OpCode::Skip(_) => { return; },
 
             OpCode::JumpBack(_) => {
                 return;
@@ -185,8 +201,13 @@ impl Tracer {
 
             OpCode::SkipIf(_) |
             OpCode::JumpBackIf(_) => {
+                let expected = match interp.stack.last().unwrap().clone().into_owned().unwrap_value() {
+                    R_BoxedValue::Bool(value) => value,
+                    _ => panic!("expected bool"),
+                };
+
                 let guard = Guard {
-                    expected: true,
+                    expected: expected,
                     recovery: pos,
                 };
                 OpCode::Guard(guard)
@@ -197,5 +218,10 @@ impl Tracer {
 
         // self.active.map(|ocs| ocs.push(oc));
         self.active.as_mut().unwrap().push(oc);
+    }
+
+    pub fn jump_target(&mut self, target: usize) {
+        let was_not_present = self.seen_jump_targets.insert(target as u64);
+        println!("{:?}", was_not_present);
     }
 }

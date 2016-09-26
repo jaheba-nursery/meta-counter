@@ -105,6 +105,7 @@ impl<'a> Interpreter<'a> {
 
 
             let opcode = self.program[func_pointer].2[pc].clone();
+
             {
                 tracer.as_mut().map(|mut t| t.trace_opcode(&opcode,
                     InstructionPointer {
@@ -187,12 +188,13 @@ impl<'a> Interpreter<'a> {
                 OpCode::JumpBackIf(n) => {
                     let val = self.pop_value();
                     if let R_BoxedValue::Bool(b) = val {
+                        // XXX: Jumped Back
                         if b {
                             pc -= n;
                             continue;
                         }
                     } else {
-                        panic!("expected bool, git {:?}", val);
+                        panic!("expected bool, got {:?}", val);
                     }
                 }
 
@@ -222,6 +224,7 @@ impl<'a> Interpreter<'a> {
         }
     }
 
+    /// execute a linear trace - returns on guard failure
     pub fn run_trace(&mut self, trace: &[OpCode]) -> InstructionPointer {
         let mut pc: usize = 0;
 

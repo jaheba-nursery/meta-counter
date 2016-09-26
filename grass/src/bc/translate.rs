@@ -248,9 +248,6 @@ impl<'a, 'tcx> MirAnalyser<'a, 'tcx> {
             n += block.len();
         }
 
-        println!("{:?}", indicies);
-
-
         let mut opcodes = Vec::new();
 
         let new_target = |block: &BasicBlock| indicies[block.index()];
@@ -261,7 +258,7 @@ impl<'a, 'tcx> MirAnalyser<'a, 'tcx> {
                     if new_target(bb) < current {
                         OpCode::JumpBack(current - new_target(bb))
                     } else {
-                        println!("SKIP: bb: {} target: {} cur: {}", bb.index(), new_target(bb), current);
+                        // println!("SKIP: bb: {} target: {} cur: {}", bb.index(), new_target(bb), current);
                         OpCode::Skip(new_target(bb) - current)
                     }
                 },
@@ -763,6 +760,14 @@ impl<'a> ByteCode for Operand<'a> {
 }
 
 
+const HEADER: &'static str = "
+use grass::core::objects::R_BoxedValue::*;
+
+use grass::bc::bytecode::OpCode;
+use grass::bc::bytecode::BinOp::*;
+
+";
+
 pub fn generate_bytecode<'a, 'tcx>(context: &'a Context<'a, 'tcx>, main: DefId) -> Program<'a, 'tcx> {
 
     let mut program = Program::new(context);
@@ -770,6 +775,8 @@ pub fn generate_bytecode<'a, 'tcx>(context: &'a Context<'a, 'tcx>, main: DefId) 
     // println!("];");
 
     let mut m_idx = 0;
+
+    println!("{}", HEADER);
 
     println!("pub static PROGRAM:&'static [(usize, usize, &'static [OpCode])] = &[ (0, 0, &[]),");
     for idx in 1..program.cache.len() {

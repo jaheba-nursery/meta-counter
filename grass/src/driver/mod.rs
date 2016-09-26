@@ -26,6 +26,7 @@ impl Driver {
                            pc: usize,
                            cell: &'a mut usize)
                            -> usize {
+
         let res = self.tracer.handle_mergepoint(pc as u64);
 
         match res {
@@ -64,8 +65,6 @@ impl Driver {
                 } else {
                     panic!("");
                 }
-                // println!("Start Trace for PC: {}", pc);
-                // println!("{:?}", program[fn_idx].2[oc_idx]);
             }
 
             MergePointResult::Trace(trace) => {
@@ -84,7 +83,13 @@ impl Driver {
 
                 let mut interp = meta::interp::Interpreter::new(&prog);
                 interp.stack_frames.push(frame);
+
                 let inst = interp.run_trace(&*trace);
+                // some guard failed
+                // should we side trace?
+                println!("inst: {:?}, pc: {}", inst.pc, pc);
+
+
                 // blackhole?
                 interp.run(None, fn_idx, inst.pc);
 
@@ -100,6 +105,7 @@ impl Driver {
                 let boxed_pc = (*frame.locals[3].borrow()).clone();
 
                 if let R_BoxedValue::Usize(ref new_pc) = boxed_pc {
+
                     new_pc.clone()
                 } else {
                     panic!("");
@@ -115,7 +121,15 @@ impl Driver {
 
 
 type HashValue = u64;
-const HOT_LOOP_THRESHOLD: usize = 5;
+const HOT_LOOP_THRESHOLD: usize = 2;
+
+// glorified Option
+#[derive(Clone, Debug)]
+pub enum MergePointResult {
+    Trace(Rc<Vec<OpCode>>),
+    StartTrace,
+    None,
+}
 
 #[derive(Default)]
 pub struct Tracer {
@@ -125,14 +139,6 @@ pub struct Tracer {
     loop_start: HashValue,
 
     active: Option<Vec<OpCode>>,
-}
-
-// glorified Option
-#[derive(Clone)]
-pub enum MergePointResult {
-    Trace(Rc<Vec<OpCode>>),
-    StartTrace,
-    None,
 }
 
 impl Tracer {
@@ -171,7 +177,8 @@ impl Tracer {
 
     pub fn trace_opcode(&mut self, opcode: &OpCode, pos: InstructionPointer) {
         let oc = match *opcode {
-            OpCode::Skip(_) |
+            OpCode::Skip(_) { return; },
+
             OpCode::JumpBack(_) => {
                 return;
             }

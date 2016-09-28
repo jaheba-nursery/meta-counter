@@ -96,7 +96,6 @@ impl<'a, 'tcx> Program<'a, 'tcx> {
             defid_map: IdMap::new(context.tcx.sess.cstore.clone()) }
     }
 
-
     pub fn load_fn_from_def_id(&mut self, def_id: DefId) {
         let local_id = self.defid_map.get_index(&def_id);
 
@@ -142,6 +141,44 @@ impl<'a, 'tcx> Program<'a, 'tcx> {
                 }
             }
         }
+    }
+
+    pub fn replace_mergepoint(&mut self) -> usize {
+        let mut main_func = self.cache.get_mut(&1).unwrap();
+        let (idx, _) = main_func.opcodes.iter().enumerate().find(|&(idx, opcode)|
+            match *opcode {
+                OpCode::ConstValue(R_BoxedValue::Func(0)) => true,
+                _ => false
+            }
+        ).unwrap();
+
+        // determine num args
+        let mut n_args = 0;
+
+        for opcode in main_func.opcodes[0..idx].iter().rev() {
+            match *opcode {
+                OpCode::Load(_) | OpCode::ConstValue(_) => { n_args += 1},
+                _ => { break; }
+            }
+        }
+
+        assert!(match main_func.opcodes[idx+1] {
+            OpCode::Call => true,
+            _ => false,
+        });
+
+        // throw away return value
+        // for opcode in main_func.opcodes[idx+2..].iter() {
+            // symbolic execution
+        // }
+        let start = idx - n_args;
+        let end = idx + 6;
+        let mut new = main_func.opcodes[..start].to_vec();
+        new.push(OpCode::MergePoint);
+        new.append(&mut main_func.opcodes[end..].to_vec());
+        main_func.opcodes = new;
+
+        idx
     }
 }
 
@@ -372,12 +409,11 @@ impl<'a> ByteCode for Terminator<'a> {
             },
 
             TerminatorKind::Call{ref func, ref args, ref destination, ..} => {
+
                 for arg in args {
                     arg.as_rvalue(env);
                 }
 
-                // FIXME: argcount should be encoded in function object
-                // env.add(OpCode::ArgCount(args.len()));
                 func.as_rvalue(env);
 
                 // destination: Option<(Lvalue<'tcx>, BasicBlock)>,
@@ -774,10 +810,10 @@ pub fn generate_bytecode<'a, 'tcx>(context: &'a Context<'a, 'tcx>, main: DefId) 
     program.load_fn_from_def_id(main);
     // println!("];");
 
-    let mut m_idx = 0;
+    let m_idx = program.replace_mergepoint();
 
     println!("{}", HEADER);
-
+    println!("// {:?}", program.cache.get(&0));
     println!("pub static PROGRAM:&'static [(usize, usize, &'static [OpCode])] = &[ (0, 0, &[]),");
     for idx in 1..program.cache.len() {
         if let Some(func) = program.cache.get(&idx) {
@@ -785,20 +821,13 @@ pub fn generate_bytecode<'a, 'tcx>(context: &'a Context<'a, 'tcx>, main: DefId) 
             print!("    ({}, {}, ", func.args_cnt, func.locals_cnt);
             println!("&[{}]),", output.join(", "));
 
-            func.opcodes.iter().enumerate().find(|&(idx, opcode)|
-                match *opcode {
-                    OpCode::ConstValue(R_BoxedValue::Func(0)) => true,
-                    _ => false
-                }).map(|(i, _)| m_idx = i);
-
-            // println!("{:?}", func);
         } else {
             println!("    (0, 0, &[]),", );
         }
     }
     println!("];");
 
-    println!("pub const IDX: (usize, usize) = (1, {});", m_idx + 7);
+    println!("pub const IDX: (usize, usize) = (1, {});", m_idx);
             // let output: Vec<String> = mir_analyser.opcodes.iter().map(|oc|oc.to_rs()).collect();
             // println!("  &[{}]", output.join(", "));
 

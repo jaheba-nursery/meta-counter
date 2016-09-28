@@ -13,6 +13,8 @@ use std::marker::Sync;
 pub enum OpCode{
     Noop,
     Panic,
+    MergePoint,
+
     Pop,
 
     Load(usize),
